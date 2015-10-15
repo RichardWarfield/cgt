@@ -76,6 +76,7 @@ def main():
     parser.add_argument("--unittest",action="store_true")
     parser.add_argument("--grad_check",action="store_true")
     parser.add_argument("--devtype",choices=["cpu","gpu"],default="cpu")
+    parser.add_argument("--backend",choices=["native","python"],default="native")
     args = parser.parse_args()
 
     if args.grad_check: cgt.set_precision("quad")
@@ -89,7 +90,7 @@ def main():
 
     np.random.seed(0)
 
-    cgt.update_config(default_device=cgt.core.Device(devtype=args.devtype), backend="native")
+    cgt.update_config(default_device=cgt.core.Device(devtype=args.devtype), backend=args.backend)
 
     if args.model=="conv":
         Xdata = Xdata.reshape(-1, 1, 28, 28)
@@ -163,7 +164,7 @@ def main():
         trainerr, trainloss = computeloss(Xtrain[:len(Xtest)], ytrain[:len(Xtest)])
         testerr, testloss = computeloss(Xtest, ytest)
         print fmt_row(10, [i_epoch, trainloss, trainerr, testloss, testerr, elapsed])
-    if args.profile: cgt.execution.profiler.print_stats()
+    if args.profile: cgt.profiler.print_stats()
 
 if __name__ == "__main__":
     main()

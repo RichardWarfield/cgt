@@ -247,20 +247,38 @@ cdef extern from "execution.h" namespace "cgt":
         ExecutionGraph(vector[Instruction*], int, int)        
         int n_args()
     cppclass LoadArgument(Instruction):
-        LoadArgument(const string&, int, const MemLocation&)
+        LoadArgument(const string&, int, int, const MemLocation&)
     cppclass Alloc(Instruction):
-        Alloc(const string&, cgtDtype, vector[MemLocation], const MemLocation&)
+        Alloc(const string&, int, cgtDtype, vector[MemLocation], const MemLocation&)
     cppclass BuildTup(Instruction):
-        BuildTup(const string&, vector[MemLocation], const MemLocation&)
+        BuildTup(const string&, int, vector[MemLocation], const MemLocation&)
     cppclass ReturnByRef(Instruction):
-        ReturnByRef(const string&, vector[MemLocation], const MemLocation&, ByRefCallable, bint)
+        ReturnByRef(const string&, int, vector[MemLocation], const MemLocation&, ByRefCallable, bint)
     cppclass ReturnByVal(Instruction):
-        ReturnByVal(const string&, vector[MemLocation], const MemLocation&, ByValCallable, bint)
+        ReturnByVal(const string&, int, vector[MemLocation], const MemLocation&, ByValCallable, bint)
 
     cppclass Interpreter:
         cgtTuple* run(cgtTuple*)
 
+    cppclass NativeProfiler:
+        void start()
+        void stop()
+        void update(Instruction, double)
+        void print_stats()
+        void clear_stats()
+        double get_t_total() 
+        vector[InstructionStats*] *get_instr_stats();
+        @staticmethod
+        NativeProfiler* get_profiler()
+    
+    struct InstructionStats:
+        string instr_repr
+        long pyinstr_hash
+        int count
+        double time_total
+
     Interpreter* create_interpreter(ExecutionGraph*, vector[MemLocation], int)
+
 
 cdef vector[size_t] _tovectorlong(object xs):
     cdef vector[size_t] out = vector[size_t]()
@@ -346,15 +364,15 @@ cdef Instruction* _tocppinstr(object pyinstr, object storage) except *:
     cdef Instruction* out
     cdef MemLocation wloc = _tocppmem(pyinstr.write_loc)
     if t == compilation.LoadArgument:
-        out = new LoadArgument(repr(pyinstr), pyinstr.ind, wloc)
+        out = new LoadArgument(repr(pyinstr), hash(pyinstr), pyinstr.ind, wloc)
     elif t == compilation.Alloc:
-        out = new Alloc(repr(pyinstr), dtype_fromstr(pyinstr.dtype), _tocppmemvec(pyinstr.read_locs), wloc)
+        out = new Alloc(repr(pyinstr), hash(pyinstr), dtype_fromstr(pyinstr.dtype), _tocppmemvec(pyinstr.read_locs), wloc)
     elif t == compilation.BuildTup:
-        out = new BuildTup(repr(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc)
+        out = new BuildTup(repr(pyinstr), hash(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc)
     elif t == compilation.ReturnByRef:
-        out = new ReturnByRef(repr(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc, _tocppbyrefcallable(pyinstr.get_callable(), storage), _isquick(pyinstr))
+        out = new ReturnByRef(repr(pyinstr), hash(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc, _tocppbyrefcallable(pyinstr.get_callable(), storage), _isquick(pyinstr))
     elif t == compilation.ReturnByVal:
-        out = new ReturnByVal(repr(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc, _tocppbyvalcallable(pyinstr.get_callable(), storage), _isquick(pyinstr))
+        out = new ReturnByVal(repr(pyinstr), hash(pyinstr), _tocppmemvec(pyinstr.read_locs), wloc, _tocppbyvalcallable(pyinstr.get_callable(), storage), _isquick(pyinstr))
     else:
         raise RuntimeError("expected instance of type Instruction. got type %s"%t)
     return out
@@ -420,6 +438,7 @@ cdef class CppInterpreterWrapper:
     def __init__(self, pyeg, input_types, output_locs, parallel):
         self.storage = []
         self.eg = make_cpp_execution_graph(pyeg, self.storage)
+        native_profiler.save_instructions(pyeg)
         cdef vector[MemLocation] cpp_output_locs = _tocppmemvec(output_locs)
         self.interp = create_interpreter(self.eg, cpp_output_locs, parallel)
         self.input_types = input_types
@@ -438,6 +457,46 @@ cdef class CppInterpreterWrapper:
         cdef IRC[cgtTuple] ret = IRC[cgtTuple](self.interp.run(cargs))
         del cargs
         return list(cgt2py_object(ret.get(), False)) # TODO maybe allow returning view?
+
+cdef class NativeProfilerWrapper:
+    cdef NativeProfiler* _profiler
+    cdef public object _py_instr_map
+    def __cinit__(self):
+        self._profiler = NativeProfiler.get_profiler()
+    def __init__(self):
+        # Maps hash values back to the instruction they hashed
+        self._py_instr_map = {}
+    def save_instructions(self, pyeg):
+        """ 
+        Updates self._py_instr_map with mappings hash(instr) -> instr so that we can find the
+        python instruction from the hash value stored in the C++ Instruction
+        """
+        for instr in pyeg.instrs:
+            self._py_instr_map[hash(instr)] = instr
+    def start(self):
+        self._profiler.start()
+    def stop(self):
+        self._profiler.stop()
+    def get_t_total(self):
+        return self._profiler.get_t_total()
+    def print_stats(self):
+        self._profiler.print_stats()
+    def clear_stats(self):
+        self._profiler.clear_stats()
+    def get_instr2stats(self):
+        cdef vector[InstructionStats*] *istats_vec = self._profiler.get_instr_stats()
+        instr2stats = {}
+        for istats in istats_vec[0]:
+            try:
+                pyinstr = self._py_instr_map[istats[0].pyinstr_hash] 
+            except KeyError:
+                print "Warning, instruction with hash not recorded by profiler" , istats[0].pyinstr_hash
+                continue
+            instr2stats[pyinstr] = (istats[0].count, istats[0].time_total)
+        return instr2stats
+
+native_profiler = NativeProfilerWrapper()
+
 
 def cgt_build_root():
     return osp.dirname(osp.dirname(osp.abspath(__file__)))

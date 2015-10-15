@@ -819,34 +819,51 @@ class _Profiler(object):
         self.instr2stats = {}
         self.on = False
         self.t_total = 0.0
-    def start(self): self.on = True
-    def stop(self): self.on = False
+    def start(self):
+        self.on = True
+        if not python_only():
+            cgt.cycgt.native_profiler.start()
+    def stop(self):
+        self.on = False
+        if not python_only():
+            cgt.cycgt.native_profiler.stop()
     def update(self, instr, elapsed):
+        # For native code, update happens in C++, not here
         (prevcount, prevtime) = self.instr2stats.get(instr, (0,0.0))
         self.instr2stats[instr] = (prevcount+1, prevtime+elapsed)
         self.t_total += elapsed
     def print_stats(self):
         op2stats = {}
         # Collapse by Op, rather than instruction
-        for (instr,(count,t)) in self.instr2stats.iteritems():
-            if isinstance(instr, (ReturnByRef, ReturnByVal)):
-                opkey = str(instr.op)
-            elif isinstance(instr, Alloc):
-                opkey = "Alloc{dtype=%s,ndim=%i}"%(instr.dtype, len(instr.read_locs))
-            else:
-                opkey = instr.__class__.__name__
+        statdicts = [ self.instr2stats ]
+        if not python_only(): statdicts += [cgt.cycgt.native_profiler.get_instr2stats()]
+        for i2s in statdicts:
+            for (instr,(count,t)) in i2s.iteritems():
+                if isinstance(instr, (ReturnByRef, ReturnByVal)):
+                    opkey = str(instr.op)
+                elif isinstance(instr, Alloc):
+                    opkey = "Alloc{dtype=%s,ndim=%i}"%(instr.dtype, len(instr.read_locs))
+                else:
+                    opkey = instr.__class__.__name__
 
-            (prevcount, prevtime) = op2stats.get(opkey, (0, 0.0))
-            op2stats[opkey] = (prevcount+count, prevtime+t)
+                (prevcount, prevtime) = op2stats.get(opkey, (0, 0.0))
+                op2stats[opkey] = (prevcount+count, prevtime+t)
 
-        print "Total time elapsed: %.3g seconds"%self.t_total
+        if python_only():
+            t_grand_total = self.t_total
+        else:
+            t_grand_total = self.t_total + cgt.cycgt.native_profiler.get_t_total()
+        print "Total time elapsed: %.3g seconds"%t_grand_total
+
         # _print_heading("By instruction")
         # _print_stats(self.instr2stats, self.t_total)
         _print_heading("By Op")
-        _print_stats(op2stats, self.t_total)
+        _print_stats(op2stats, t_grand_total)
     def clear_stats(self):
         self.instr2stats = {}
         self.t_total = 0.0
+        if not python_only() and cgt.cycgt.native_profiler is not None:
+            cgt.cycgt.native_profiler.clear_stats()
 
 profiler = _Profiler()
 

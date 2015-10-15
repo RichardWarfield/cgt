@@ -6,6 +6,7 @@
 #include "util/ThreadPool.h"
 #include "unistd.h"
 
+
 namespace cgt {
 
 using std::vector;
@@ -35,8 +36,18 @@ public:
         args_ = newargs;
         cgt_assert(newargs != NULL);
         cgt_assert(newargs->len == eg_->n_args());
-        for (Instruction* instr : eg_->instrs()) {
-            instr->fire(this);
+        if (NativeProfiler::get_profiler()->is_on()) {
+            for (Instruction* instr : eg_->instrs()) {
+                auto starttime = Clock::now();
+                instr->fire(this);
+                auto duration = Clock::now() - starttime;
+                auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+                NativeProfiler::get_profiler()->update(instr, double(nanos)/1000000000.0);
+            }
+        } else {
+            for (Instruction* instr : eg_->instrs()) {
+                instr->fire(this);
+            }
         }
         args_ = NULL;
         size_t n_outputs = output_locs_.size();
@@ -310,5 +321,15 @@ Interpreter* create_interpreter(ExecutionGraph* eg, vector<MemLocation> output_l
     }
 }
 
+void NativeProfiler::print_stats() {
+    map<Instruction*, InstructionStats*>::iterator mapiter = instr2stats.begin();
+    for(; mapiter != instr2stats.end(); mapiter++) {
+        printf("%s: count is %d, total time is %f\n", 
+                mapiter->first->repr().c_str(), mapiter->second->count, mapiter->second->time_total);
+    }
+
+}
+
+NativeProfiler NativeProfiler::native_profiler; // Allocate memory for the static data variable
 
 }
